@@ -17,6 +17,9 @@
 import Foundation
 import AVFAudio
 import SwiftUI
+#if os(iOS)
+import BackgroundTasks
+#endif
 
 /// Represents the UI state for a single VM session.
 @MainActor class VMSessionState: NSObject, ObservableObject {
@@ -151,6 +154,15 @@ extension VMSessionState: UTMVirtualMachineDelegate {
     nonisolated func virtualMachine(_ vm: any UTMVirtualMachine, didTransitionToState state: UTMVirtualMachineState) {
         Task { @MainActor in
             vmState = state
+            #if os(iOS)
+            if #available(iOS 26.0, *) {
+                if state == .started && shouldRunInBackground {
+                    VMBackgroundProcessing.shared.begin(for: self)
+                } else if state == .stopped || state == .paused {
+                    VMBackgroundProcessing.shared.finish(for: self)
+                }
+            }
+            #endif
             if state == .stopped {
                 #if WITH_USB
                 clearDevices()
@@ -443,6 +455,23 @@ extension VMSessionState: CSUSBManagerDelegate {
 #endif
 
 extension VMSessionState {
+    static func registerBackgroundProcessing() {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            VMBackgroundProcessing.shared.register()
+        }
+        #endif
+    }
+
+    private var hasContinuedBackgroundProcessing: Bool {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            return VMBackgroundProcessing.shared.contains(self)
+        }
+        #endif
+        return false
+    }
+
     private var shouldRunInBackground: Bool {
         UserDefaults.standard.bool(forKey: "RunInBackground")
     }
@@ -590,7 +619,7 @@ extension VMSessionState {
             }
         }
         #if !WITH_LOCATION_BACKGROUND
-        if shouldRunInBackground && vmState == .started {
+        if shouldRunInBackground && vmState == .started && !hasContinuedBackgroundProcessing {
             backgroundTask = UIApplication.shared.beginBackgroundTask {
                 logger.info("Background task ending")
                 self.showBackgroundExpireNotification()
@@ -603,6 +632,15 @@ extension VMSessionState {
     func didEnterForeground() {
         #if !os(visionOS)
         logger.info("Entering foreground!")
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            if shouldRunInBackground && vmState == .started {
+                VMBackgroundProcessing.shared.begin(for: self)
+            } else if !shouldRunInBackground {
+                VMBackgroundProcessing.shared.finish(for: self)
+            }
+        }
+        #endif
         if (hasAutosave && vmState == .started) {
             logger.info("Deleting snapshot")
             vm.requestVmDeleteState()
@@ -630,6 +668,125 @@ extension VMSessionState {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["BACKGROUND"])
     }
 }
+
+#if os(iOS)
+@available(iOS 26.0, *)
+@MainActor private final class VMBackgroundProcessing {
+    static let shared = VMBackgroundProcessing()
+
+    private let identifier = (Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String])?.first ?? "com.utmapp.UTM.vm-background"
+    private let duration: TimeInterval = 24 * 60 * 60
+    private weak var session: VMSessionState?
+    private var task: BGContinuedProcessingTask?
+    private var timer: Timer?
+    private var pending = false
+    private var registered = false
+
+    func register() {
+        guard !registered else { return }
+        registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { [weak self] task in
+            guard let task = task as? BGContinuedProcessingTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            MainActor.assumeIsolated {
+                self?.run(task)
+            }
+        }
+    }
+
+    func contains(_ session: VMSessionState) -> Bool {
+        self.session === session && (pending || task != nil)
+    }
+
+    func begin(for session: VMSessionState) {
+        guard UIApplication.shared.applicationState == .active, !contains(session) else { return }
+        guard registered else {
+            session.nonfatalError = NSLocalizedString("Background processing could not be registered.", comment: "VMSessionState")
+            return
+        }
+        guard self.session == nil else {
+            session.nonfatalError = NSLocalizedString("Another virtual machine has an active background session.", comment: "VMSessionState")
+            return
+        }
+        self.session = session
+        pending = true
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier,
+                                                      title: NSLocalizedString("Virtual machine session", comment: "VMSessionState"),
+                                                      subtitle: NSLocalizedString("Up to 24 hours", comment: "VMSessionState"))
+        request.strategy = .fail
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            self.session = nil
+            pending = false
+            session.nonfatalError = error.localizedDescription
+        }
+    }
+
+    private func run(_ task: BGContinuedProcessingTask) {
+        guard session != nil, pending, self.task == nil else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        pending = false
+        self.task = task
+        let started = ProcessInfo.processInfo.systemUptime
+        task.progress.totalUnitCount = Int64(duration)
+        task.expirationHandler = { [weak self, weak task] in
+            Task { @MainActor in
+                guard let self, let task, self.task === task else { return }
+                self.expire()
+            }
+        }
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self, weak task] _ in
+            Task { @MainActor in
+                guard let self, let task, self.task === task else { return }
+                let elapsed = ProcessInfo.processInfo.systemUptime - started
+                task.progress.completedUnitCount = min(Int64(elapsed), Int64(self.duration))
+                if elapsed >= self.duration {
+                    self.expire()
+                }
+            }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        logger.debug("Continued background VM session started")
+    }
+
+    func finish(for session: VMSessionState) {
+        guard self.session === session else { return }
+        finish(success: true)
+    }
+
+    private func expire() {
+        guard let session else {
+            finish(success: false)
+            return
+        }
+        if session.vmState == .started {
+            session.vm.requestVmPause()
+        }
+        session.nonfatalError = NSLocalizedString("iOS ended this background session. Check the virtual machine before resuming.", comment: "VMSessionState")
+        finish(success: false)
+    }
+
+    private func finish(success: Bool) {
+        timer?.invalidate()
+        timer = nil
+        if pending {
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+        }
+        pending = false
+        let finishedTask = task
+        task = nil
+        session = nil
+        finishedTask?.expirationHandler = nil
+        finishedTask?.setTaskCompleted(success: success)
+        logger.debug("Continued background VM session finished")
+    }
+}
+#endif
 
 extension Notification.Name {
     static let vmSessionCreated = Self("VMSessionCreated")

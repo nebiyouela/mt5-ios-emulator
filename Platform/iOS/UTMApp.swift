@@ -25,6 +25,7 @@ struct UTMApp: App {
     #endif
 
     init() {
+        VMSessionState.registerBackgroundProcessing()
         #if WITH_REMOTE
         let data = UTMRemoteData()
         #else

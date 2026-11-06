@@ -56,7 +56,7 @@ public extension VMDisplayViewController {
             UIPress.pressResponderOverride = self
         }
         #if !os(visionOS) && WITH_LOCATION_BACKGROUND
-        if runInBackground {
+        if #unavailable(iOS 26.0), runInBackground {
             logger.info("Start location tracking to enable running in background")
             UTMLocationManager.sharedInstance().startUpdatingLocation()
         }
