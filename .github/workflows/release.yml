@@ -1,0 +1,59 @@
+name: Publish iPhone IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Build iPhone IPA run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+    steps:
+      - name: Verify and download the successful build
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > build.json
+          jq -e '.conclusion == "success" and .path == ".github/workflows/build.yml"' build.json
+          echo "source_sha=$(jq -r .head_sha build.json)" >> "$GITHUB_OUTPUT"
+          gh run download "$BUILD_RUN_ID" --name MT5-iOS-Emulator-unsigned --dir package
+          test -s package/MT5-iOS-Emulator.ipa
+          unzip -t package/MT5-iOS-Emulator.ipa > ipa-validation.txt
+          cd package
+          sha256sum MT5-iOS-Emulator.ipa > SHA256SUMS.txt
+      - name: Publish release assets
+        env:
+          SOURCE_SHA: ${{ steps.build.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="ios-build-$BUILD_RUN_ID"
+          cat > release-notes.md <<EOF
+          Experimental UTM/QEMU-based development IPA for iPhone 11 and iOS 26 or later.
+
+          Download **MT5-iOS-Emulator.ipa** below under **Assets**. Sign with a development account and renew every seven days when using a free account. JIT activation is also required.
+
+          Supply a guest operating-system image, then install MT5 inside the guest. These add storage and download requirements.
+
+          Enable **Continue running VM in the background** in settings. Background sessions have a 24-hour budget and iOS may interrupt them earlier. On-device validation of MT5 performance and background operation is pending.
+
+          [Setup guide](https://github.com/$GH_REPO/blob/$SOURCE_SHA/Documentation/MT5iOS.md) · [Successful build](https://github.com/$GH_REPO/actions/runs/$BUILD_RUN_ID)
+          EOF
+          gh release create "$RELEASE_TAG" package/MT5-iOS-Emulator.ipa package/SHA256SUMS.txt \
+            --target "$SOURCE_SHA" --title "MT5 iPhone Emulator — build $BUILD_RUN_ID" \
+            --notes-file release-notes.md --prerelease --draft
+          gh release edit "$RELEASE_TAG" --draft=false
