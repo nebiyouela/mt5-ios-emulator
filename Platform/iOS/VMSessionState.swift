@@ -736,7 +736,7 @@ extension VMSessionState {
         task.expirationHandler = { [weak self, weak task] in
             Task { @MainActor in
                 guard let self, let task, self.task === task else { return }
-                self.expire()
+                self.expire(completed: false)
             }
         }
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self, weak task] _ in
@@ -745,7 +745,7 @@ extension VMSessionState {
                 let elapsed = ProcessInfo.processInfo.systemUptime - started
                 task.progress.completedUnitCount = min(Int64(elapsed), Int64(self.duration))
                 if elapsed >= self.duration {
-                    self.expire()
+                    self.expire(completed: true)
                 }
             }
         }
@@ -759,7 +759,7 @@ extension VMSessionState {
         finish(success: true)
     }
 
-    private func expire() {
+    private func expire(completed: Bool) {
         guard let session else {
             finish(success: false)
             return
@@ -767,8 +767,10 @@ extension VMSessionState {
         if session.vmState == .started {
             session.vm.requestVmPause()
         }
-        session.nonfatalError = NSLocalizedString("iOS ended this background session. Check the virtual machine before resuming.", comment: "VMSessionState")
-        finish(success: false)
+        session.nonfatalError = completed
+            ? NSLocalizedString("The 24-hour session finished. Check the virtual machine before resuming.", comment: "VMSessionState")
+            : NSLocalizedString("iOS ended this background session. Check the virtual machine before resuming.", comment: "VMSessionState")
+        finish(success: completed)
     }
 
     private func finish(success: Bool) {
