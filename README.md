@@ -1,4 +1,10 @@
 #  UTM
+
+This development fork targets an iPhone 11 running iOS 26 or later. It builds an
+unsigned IPA for weekly development signing and adds experimental continued
+background VM sessions. MT5 compatibility and background operation on the iPhone
+still need device testing. [iPhone build and setup guide](Documentation/MT5iOS.md)
+
 [![Build](https://github.com/utmapp/UTM/actions/workflows/build.yml/badge.svg?branch=main&event=push)][1]
 [![Mac App Store](https://img.shields.io/badge/Mac_App_Store-UTM-0D96F6?logo=appstore&logoColor=white)](https://apps.apple.com/us/app/utm-virtual-machines/id1538878817)
 [![App Store](https://img.shields.io/badge/App_Store-UTM_SE-0D96F6?logo=appstore&logoColor=white)](https://apps.apple.com/us/app/utm-se-retro-pc-emulator/id1564628856)
