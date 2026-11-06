@@ -63,7 +63,7 @@ private extension VMToolbarModifier {
     /// Toolbar content cannot branch on availability before iOS 16, so the view does.
     @ViewBuilder
     func toolbar(_ content: Content) -> some View {
-        #if os(iOS)
+        #if os(iOS) && canImport(SwiftUI, _version: 8.0)
         if #available(iOS 27, *) {
             content.toolbar {
                 prioritizedToolbarContent
@@ -122,7 +122,7 @@ private extension VMToolbarModifier {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) && canImport(SwiftUI, _version: 8.0)
     /// Separate items so that a bar too short for all of them drops the least important ones first.
     ///
     /// A vertical bar on the closed iPhone Duo overflows from the bottom, where Run and Stop sit.

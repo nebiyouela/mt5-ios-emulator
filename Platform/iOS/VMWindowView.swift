@@ -571,7 +571,7 @@ private struct VMWindowCloseConfirmationModifier: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        #if os(visionOS) || WITH_REMOTE
+        #if os(visionOS) || WITH_REMOTE || !canImport(SwiftUI, _version: 8.0)
         content
         #else
         if #available(iOS 27, *) {

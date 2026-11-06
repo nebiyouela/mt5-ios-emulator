@@ -68,6 +68,7 @@ extension View {
     /// `UTMExternalSceneDelegate`.
     @ViewBuilder
     func externalDisplayAccessory() -> some View {
+        #if canImport(SwiftUI, _version: 8.0)
         if #available(iOS 27, *) {
             sceneAccessory {
                 ExternalNonInteractiveAccessory {
@@ -77,5 +78,8 @@ extension View {
         } else {
             self
         }
+        #else
+        self
+        #endif
     }
 }
